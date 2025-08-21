@@ -1,7 +1,7 @@
 import os
 import asyncio
 
-from huggingface_hub import AsyncInferenceClient
+from openai import AsyncOpenAI
 
 from dotenv import load_dotenv
 
@@ -14,16 +14,14 @@ from aiogram import F
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-HF_TOKEN = os.getenv("HF_TOKEN")
-
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
-hf = AsyncInferenceClient(
-    model="google/gemma-2-2b-it",
-    token=HF_TOKEN,
-    timeout=60.0,
+ollama_client = AsyncOpenAI(
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",
 )
+
 
 @dp.message(Command('start'))
 async def start_handler(message: Message):
@@ -38,31 +36,26 @@ async def echo_handler(message: Message):
     await message.answer(message.text)
 
 @dp.message(Command("ask"))
-async def ask_hf_handler(message: Message):
+async def ask_local_llm(message: Message):
     prompt = message.text.removeprefix("/ask").strip()
     if not prompt:
         await message.answer("Usage: /ask your question")
         return
-    if not HF_TOKEN:
-        await message.answer("HF token is missing on the server.")
-        return
     try:
-        result = await hf.chat_completion(
+        resp = await ollama_client.chat.completions.create(
+            model="llama3.1:8b-instruct-q4_K_M",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
             temperature=0.7,
+            max_tokens=400,
         )
-        text = result.choices[0].message["content"]
-        await message.answer(text or "(empty)")
+        text = resp.choices[0].message.content
+        await message.answer(text[:4096] or "(empty)")
     except Exception as e:
-        await message.answer(f"HF error: {e}")
+        await message.answer(f"Local LLM error: {e}")
 
 
 async def main():
-    try:
-        await dp.start_polling(bot)
-    finally:
-        await hf.aclose()
+    await dp.start_polling(bot)
 
 if __name__ == '__main__':
     asyncio.run(main())
