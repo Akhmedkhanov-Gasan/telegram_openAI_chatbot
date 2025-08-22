@@ -1,15 +1,13 @@
 import os
 import asyncio
+from collections import defaultdict, deque
 
 from openai import AsyncOpenAI
-
 from dotenv import load_dotenv
-
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
-from aiogram.filters import Command
 from aiogram import F
-
+from aiogram.enums import ChatAction
 
 load_dotenv()
 
@@ -22,37 +20,46 @@ ollama_client = AsyncOpenAI(
     api_key="ollama",
 )
 
+chat_history = defaultdict(lambda: deque(maxlen=5))
 
-@dp.message(Command('start'))
-async def start_handler(message: Message):
-    await message.answer(f'Hello there! {message.from_user.first_name}')
+async def show_typing(bot: Bot, chat_id: int):
+    try:
+        while True:
+            await bot.send_chat_action(chat_id, ChatAction.TYPING)
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        pass
 
-@dp.message(Command('help'))
-async def help_handler(message: Message):
-    await message.answer('Type "/start" to start the bot. ')
+async def send_in_chunks(message: Message, text: str, chunk_size: int = 3500):
+    for i in range(0, len(text), chunk_size):
+        await message.answer(text[i:i+chunk_size])
 
-@dp.message(F.text, ~F.text.startswith('/'))
-async def echo_handler(message: Message):
-    await message.answer(message.text)
-
-@dp.message(Command("ask"))
+@dp.message(F.text)
 async def ask_local_llm(message: Message):
-    prompt = message.text.removeprefix("/ask").strip()
+    user_id = message.chat.id
+    prompt = message.text.strip()
     if not prompt:
-        await message.answer("Usage: /ask your question")
         return
+
+    chat_history[user_id].append({"role": "user", "content": prompt})
+
+    task = asyncio.create_task(show_typing(message.bot, message.chat.id))
     try:
         resp = await ollama_client.chat.completions.create(
-            model="llama3.1:8b-instruct-q4_K_M",
-            messages=[{"role": "user", "content": prompt}],
+            model="qwen2.5:14b-instruct-q5_K_M",
+            messages=list(chat_history[user_id]),
             temperature=0.7,
-            max_tokens=400,
+            max_tokens=800,
         )
         text = resp.choices[0].message.content
-        await message.answer(text[:4096] or "(empty)")
+
+        chat_history[user_id].append({"role": "assistant", "content": text})
+
+        await send_in_chunks(message, text or "(empty)")
     except Exception as e:
         await message.answer(f"Local LLM error: {e}")
-
+    finally:
+        task.cancel()
 
 async def main():
     await dp.start_polling(bot)
